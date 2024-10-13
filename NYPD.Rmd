@@ -1,0 +1,283 @@
+---
+title: "NYPD Shooting Incident Analysis"
+output:
+  pdf_document: default
+  html_document: default
+date: "2024-10-12"
+---
+
+# Introduction
+
+For this study, it's going to look at New York City's shooting incidents data from 2006 to 2023. The study is interested in understanding changes in the number of incidents over the years and when are incidents more likely to happen.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Prepare the environment by loading necessary packages.
+
+```{r library, message=FALSE}
+library(tidyverse)
+library(lubridate)
+```
+
+# Import Data
+
+Import NYPD Shooting Incident Data from source and have a quick summary of the data.
+
+```{r nypd_getData, message = FALSE}
+
+url_in <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+file_names <- "NYPD_Shooting_Incident_Data.csv"
+NYPD_data <- read_csv(url_in)
+summary(NYPD_data)
+```
+
+## Biases of the Data
+
+
+This data sets contains demographic information for both the victim and the perpetrator. We have confirmed demographic information about the victim since as they are generally easier to identify. But for demo information related to the perpetrators, we do have large numbers of missing and unknown data since perpetrators are unidentifiable. Certain determining factors like number of available first respondents or police on patrols are not disclosed. This could lead to availability bias as data that are available to the general public are selected and limited.
+
+
+# Tidy and Transform Data
+
+## Tidying Data
+
+Based on the data summary, remove following columns from the data set:
+
+1. X_COORD_CD
+2. Y_COORD_CD
+3. Latitude
+4. Longitude
+5. Lon_Lat
+6. PRECINCT
+7. JURISDICTION_CODE
+
+Update data type and create new date time column.
+
+
+
+
+```{r tidy_data_NYPD, message = FALSE}
+#remove unused fields
+NYPD_data <- NYPD_data %>% select(-c(X_COORD_CD,Y_COORD_CD,Latitude,Longitude,
+                                     Lon_Lat,PRECINCT,JURISDICTION_CODE)) 
+#change data type to date
+NYPD_data$OCCUR_DATE <- as.Date(NYPD_data$OCCUR_DATE, format = "%m/%d/%Y")
+# add a new year field
+NYPD_data$OCCUR_YEAR <- year(NYPD_data$OCCUR_DATE)
+#add a new datetime field
+NYPD_data <- NYPD_data %>%
+  mutate(OCCUR_DATETIME = as_datetime(str_c(OCCUR_DATE,OCCUR_TIME)))
+
+```
+
+## Transform Data
+
+To prepare the data for analysis, following field will be added to the data set:
+
+1. OCCUR_DAY - day of when the crime occurred
+2. Hour_category - hour category of when the crime occurred
+
+
+Potential Bias: 
+For this study, variables are selected such columns with large amount of empty and unknown data are avoid. For example, demographic information of the perpetrator and descriptive locations columns are remove from the analysis data, This could limit the analysis we are able to run and impact accuracy of the model.
+
+
+```{r transform_data_NYPD, message = FALSE}
+#add a new datetime field
+NYPD_data <- NYPD_data %>%
+  mutate(OCCUR_DATETIME = as_datetime(str_c(OCCUR_DATE,OCCUR_TIME)))
+NYPD_data$OCCUR_DAY <- weekdays(NYPD_data$OCCUR_DATE)
+#categorize hours
+NYPD_data$OCCUR_HOUR_CAT <- ifelse(between(hour(NYPD_data$OCCUR_TIME),1,4),"Late Night",
+       ifelse(between(hour(NYPD_data$OCCUR_TIME),5,8),"Early Morning",
+              ifelse(between(hour(NYPD_data$OCCUR_TIME),9,12),"Morning",
+                     ifelse(between(hour(NYPD_data$OCCUR_TIME),13,16),"Afternoon",
+                            ifelse(between(hour(NYPD_data$OCCUR_TIME),17,20),"Early Night",
+                                ifelse(between(hour(NYPD_data$OCCUR_TIME),21,23)
+                                       |hour(NYPD_data$OCCUR_TIME)==0,"Evening",
+                                   NYPD_data$OCCUR_TIME))))))
+
+# transpose data to count incidents and deaths by time and day
+NYPD_TODDOW <- NYPD_data %>% group_by(OCCUR_YEAR,OCCUR_DAY,OCCUR_HOUR_CAT,
+                                      OCCUR_DATE,OCCUR_TIME,STATISTICAL_MURDER_FLAG) %>%
+  summarize(incidents = n_distinct(INCIDENT_KEY),
+            deaths = n_distinct(INCIDENT_KEY[STATISTICAL_MURDER_FLAG == TRUE]))
+
+```
+
+## Visualizing and Analyzing the Data
+
+### Incidents by Time and Day
+
+First, we are by looking at when incidents occurred. By analyzing number of incident by day, we are able to see that most shooting took place on Sunday. Shooting are more prominent between hours of 10PM to 1AM. Similar trends exist for shooting deaths.
+
+For the ease of analysis, hours at which the crime was occurred were categorize into different time of the day: Late Night, Early Morning, Morning, Afternoon, Early Night and Evening. (*Refer to footer of the following graphs for time category*)
+
+Based on the heat map, we can see over 15% of all shooting incidents (See graph *Time of Day, Day of Week of Shooting Incidents*) and 13% of shooting deaths (See graph *Time of Day, Day of Week of Shooting Incident Deaths*) took place during late night on the weekends. Shooting incidents happened during early morning hours on Wednesday has the highest fatality rate. (See graph *Time of Day, Day of Week of Shooting Fatality Rate*)
+
+Potential Bias:
+Although it is easier to analyze by grouping hour of day into categories, this could also lead to selection bias as categorization of the hours are dependent on the analyst. By modifying hours that falls into different time of the day, this could change recommendations on how police department allocate their patrol force at different hours.
+
+
+```{r visualize_data_TODDOW, message=FALSE,fig.height = 10, fig.width = 10}
+#1. Shooting incidents and deaths by day and time
+
+NYPD_TODDOW %>% group_by(OCCUR_DAY) %>% 
+  summarise(incidents = sum(incidents)) %>% arrange(desc(incidents))
+
+NYPD_TODDOW %>% group_by(hour(OCCUR_TIME)) %>% 
+  summarise(incidents = sum(incidents)) %>% arrange(desc(incidents))
+
+NYPD_TODDOW %>% group_by(OCCUR_DAY) %>% 
+  summarise(deaths = sum(deaths)) %>% arrange(desc(deaths))
+
+NYPD_TODDOW %>% group_by(hour(OCCUR_TIME)) %>% 
+  summarise(deaths = sum(deaths)) %>% arrange(desc(deaths))
+
+
+# Factor the variables for better visualization
+NYPD_TODDOW$OCCUR_DAY <- factor(NYPD_TODDOW$OCCUR_DAY, 
+                                levels = c("Sunday", "Monday", "Tuesday", 
+                                           "Wednesday", "Thursday", "Friday", "Saturday"))
+NYPD_TODDOW$OCCUR_HOUR_CAT <- factor(NYPD_TODDOW$OCCUR_HOUR_CAT, 
+                                     levels = c("Late Night", "Early Morning", 
+                                                "Morning", "Afternoon", "Early Night", "Evening"))
+
+# create a heat map for incidents
+NYPD_TODDOW %>% group_by(OCCUR_DAY,OCCUR_HOUR_CAT) %>% 
+  summarise(incidents = sum(incidents)) %>%
+  ggplot(aes(x=OCCUR_DAY,y=OCCUR_HOUR_CAT, fill = 
+               100*round(incidents/sum(incidents), 4))) + 
+  geom_tile() +
+  scale_fill_gradient(low="grey",high="red") +
+  geom_text(aes(x =OCCUR_DAY , y = OCCUR_HOUR_CAT, 
+                label = paste0(100*round(incidents/sum(incidents), 4),"%"))) +
+  labs(title = "Time of Day, Day of Week of Shooting Incidents", 
+       x = "", y="",fill="Percentage of Incidents",
+       caption = "Late Night: 1-4AM, Early Morning: 5-8AM, 
+       Morning: 9-12PM, Afternoon: 13-16PM, 
+       Early Night: 17-20PM, Evening: 21-24PM
+       Incidents labelled as percentage") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+# create a heat map for deaths
+NYPD_TODDOW %>% group_by(OCCUR_DAY,OCCUR_HOUR_CAT) %>% 
+  summarise(deaths = sum(deaths)) %>%
+  ggplot(aes(x=OCCUR_DAY,y=OCCUR_HOUR_CAT, 
+             fill = 100*round(deaths/sum(deaths), 4))) + 
+  geom_tile() +
+  scale_fill_gradient(low="grey",high="red") +
+  geom_text(aes(x =OCCUR_DAY , y = OCCUR_HOUR_CAT, 
+                label = paste0(100*round(deaths/sum(deaths), 4),"%"))) +
+  labs(title = "Time of Day, Day of Week of Shooting Incident Deaths", 
+       x = "", y="", fill="Percentage of Deaths",
+       caption = "Late Night: 1-4AM, Early Morning: 5-8AM, 
+       Morning: 9-12PM, Afternoon: 13-16PM, 
+       Early Night: 17-20PM, Evening: 21-24PM
+       Deaths labelled as percentage") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+# create a heat map for fatality rate
+NYPD_TODDOW %>% group_by(OCCUR_DAY,OCCUR_HOUR_CAT) %>% 
+  summarise(fatality_rate = round(sum(deaths)/sum(incidents),4)) %>%
+  ggplot(aes(x=OCCUR_DAY,y=OCCUR_HOUR_CAT, fill = 100*fatality_rate)) + 
+  geom_tile() +
+  scale_fill_gradient(low="grey",high="red") +
+  geom_text(aes(x =OCCUR_DAY , y = OCCUR_HOUR_CAT, 
+                label = paste0(100*fatality_rate,"%"))) +
+  labs(title = "Time of Day, Day of Week of Shooting Fatality Rate", 
+       x = "", y="",fill="Fatality Rate",
+       caption = "Late Night: 1-4AM, Early Morning: 5-8AM, 
+       Morning: 9-12PM, Afternoon: 13-16PM, 
+       Early Night: 17-20PM, Evening: 21-24PM
+       Fatality Rate labelled as percentage") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+### Incidents Changes by Year
+
+By checking the data and information of the data set on the source website, this data covered shooting incidents between year 2006 to 2023.
+
+As shown in the graph *Shooting Incidents and Deaths Trend*, number of shooting incidents had been decreasing from year 2006 to 2018. Followed by sharp increase in year 2019 to 2021. The number of incidents start decreasing in year 2022. The number of death cases from shooting incidents also follow similar trends with decrease between year 2006 to 2018 and sharp increase between year 2019 to 2021. Number of deaths decreases starting from year 2022.
+
+However, when we look at fatality rate over the years, it had been decreasing from year 2010 to 2014, following by increasing trend since 2015. We can see that overtime, shooting incidents had been increasingly more fatal.
+
+Potential Bias:
+While conducting analysis, we must also consider external factors. During the incidents increased period between year 2019 to 2021, we are experiencing a global pandemic. This impacted the availability of police forces. Without this context, one can draw wrongful conclusion that shooting incidents increased during those time by wrongful causes.
+
+
+```{r visualize_data_year, message=FALSE}
+print(paste0("First incident on ",min(NYPD_TODDOW$OCCUR_DATE)))
+print(paste0("Last incident on ",max(NYPD_TODDOW$OCCUR_DATE)))
+
+NYPD_TODDOW %>% group_by(OCCUR_YEAR) %>%
+  summarise(incidents = sum(incidents), deaths=sum(deaths)) %>%
+  filter(incidents > 0) %>% ggplot(aes(x=OCCUR_YEAR,y=incidents)) + 
+  geom_line(aes(colour = "OCCUR_YEAR")) + 
+  geom_point(aes(colour = "incidents")) + 
+  geom_line(aes(y = deaths, colour = "deaths")) + 
+  geom_point(aes(y = deaths, colour = "deaths")) + 
+  theme(legend.position = "bottom") + 
+  labs(title = "Shooting Incidents and Deaths Trend", x = NULL, y = NULL)
+
+
+NYPD_TODDOW %>% group_by(OCCUR_YEAR) %>%  filter(incidents > 0) %>%
+  summarise(fatality_rate = sum(deaths)/sum(incidents)) %>%
+  ggplot(aes(x=OCCUR_YEAR,y=fatality_rate)) + 
+  geom_line(aes(colour = "OCCUR_YEAR")) + 
+  geom_point(aes(colour = "fatality_rate")) + 
+  theme(legend.position = "bottom") + 
+  labs(title = "Shooting Fatality Rate Trend", x = NULL, y = NULL)
+```
+
+## Modeling the Data
+
+Linear model to look at response **fatality_rate** with terms **deaths** and **incidents**.
+
+
+```{r model_data, message= FALSE}
+# transform data for modelling
+NYPD_mod_data <- NYPD_data %>% 
+  mutate(OCCUR_DAY = ifelse(OCCUR_DATE %in% 
+                              c("Sunday","Saturday"),"Weekend","Weekday")) %>%
+  group_by(OCCUR_YEAR,OCCUR_DAY,OCCUR_HOUR_CAT, STATISTICAL_MURDER_FLAG,BORO) %>%
+  summarize(incidents = n_distinct(INCIDENT_KEY),
+            deaths = n_distinct(INCIDENT_KEY[STATISTICAL_MURDER_FLAG == TRUE])) %>%
+  select(-c(STATISTICAL_MURDER_FLAG)) %>%
+  group_by(OCCUR_DAY,OCCUR_HOUR_CAT,BORO) %>%
+  summarise(incidents = sum(incidents),deaths = sum(deaths)) %>%
+  mutate(fatality_rate = deaths/incidents) %>% ungroup()
+
+#factor the variables
+NYPD_mod_data$OCCUR_DAY <- factor(NYPD_mod_data$OCCUR_DAY)
+NYPD_mod_data$OCCUR_HOUR_CAT <- factor(NYPD_mod_data$OCCUR_HOUR_CAT)
+NYPD_mod_data$BORO <- factor(NYPD_mod_data$BORO)
+
+
+NYPD_mod <- lm(fatality_rate ~ incidents + deaths, data = NYPD_mod_data)
+summary(NYPD_mod)
+NYPD_mod_pred <- NYPD_mod_data %>% 
+  mutate(pred=predict(NYPD_mod))
+
+
+NYPD_mod_pred %>% ggplot() + 
+  geom_point(aes(x = fatality_rate, y = OCCUR_HOUR_CAT),colour="blue") + 
+  geom_point(aes(x = pred, y = OCCUR_HOUR_CAT),colour="red") +
+  labs(title = "Fatality Rate Prediction by Time of Day") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+```
+
+
+# Conclusions
+
+Shooting incidents were more likely to happen on weekends in late night (between 1-4AM) and fatality rate is the highest for incidents that happens on a Wednesday in the early morning (5-8AM). We see a decreasing trend in number of reported incidents from 2006 up to 2019. However, the number of incidents spiked in 2019 during the pandemic and remain high for 2019 to 2021. The number of incidents started to decrease from 2022. On the other hand, we see a decrease in shooting incidents fatality rate from 2006 to 2014. Starting from 2015, fatality rate had been on a increasing trend.
+
+This conclusion provides a guidance on when local law enforcement should consider increasing their patrol and when first respondents need to be prepare for casualties.
+
